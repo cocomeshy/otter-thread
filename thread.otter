@@ -72,7 +72,7 @@ link 33554467 ~> __macos_nanosleep(req:rawptr, rem:rawptr) -> int;
       handle = CreateThread(null, 0, func, arg, 0, null);
     };
     0 -> {
-      rock stack_mem:rawptr = alloc(65536);
+      rock stack_mem:rawptr = memory.alloc(65536);
       rock stack_top:rawptr = stack_mem @ 65536;
       rock tid:int = __linux_clone(69376, stack_top, null, null, null);
       handle = tid;
@@ -119,24 +119,24 @@ link 33554467 ~> __macos_nanosleep(req:rawptr, rem:rawptr) -> int;
       Sleep(ms);
     };
     0 -> {
-      rock timespec:rawptr = alloc(16);
+      rock timespec:rawptr = memory.alloc(16);
       rock seconds:int = ms / 1000;
       rock nanos:int = (ms % 1000) * 1000000;
       *timespec = seconds;
       rock nanos_ptr:rawptr = timespec @ 8;
       *nanos_ptr = nanos;
       __linux_nanosleep(timespec, null);
-      free(timespec);
+      memory.free(timespec);
     };
     2 -> {
-      rock timespec:rawptr = alloc(16);
+      rock timespec:rawptr = memory.alloc(16);
       rock seconds:int = ms / 1000;
       rock nanos:int = (ms % 1000) * 1000000;
       *timespec = seconds;
       rock nanos_ptr:rawptr = timespec @ 8;
       *nanos_ptr = nanos;
       __macos_nanosleep(timespec, null);
-      free(timespec);
+      memory.free(timespec);
     };
     _ -> {};
   }
@@ -167,12 +167,12 @@ link 33554467 ~> __macos_nanosleep(req:rawptr, rem:rawptr) -> int;
       return CreateMutexA(null, false, null);
     };
     0 -> {
-      rock mtx:rawptr = alloc(8);
+      rock mtx:rawptr = memory.alloc(8);
       *mtx = 0;
       return mtx;
     };
     2 -> {
-      rock mtx:rawptr = alloc(8);
+      rock mtx:rawptr = memory.alloc(8);
       *mtx = 0;
       return mtx;
     };
@@ -258,10 +258,10 @@ link 33554467 ~> __macos_nanosleep(req:rawptr, rem:rawptr) -> int;
       CloseHandle(mtx);
     };
     0 -> {
-      free(mtx);
+      memory.free(mtx);
     };
     2 -> {
-      free(mtx);
+      memory.free(mtx);
     };
     _ -> {};
   }
