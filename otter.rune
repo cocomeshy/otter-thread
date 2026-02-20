@@ -1,0 +1,18 @@
+rune 1
+name "thread"
+version "1.0.0"
+description "Cross-platform threading, synchronization, and mutex primitives"
+author "cocomeshy"
+license "MIT"
+entry thread.otter
+
+use "memory" want "1.0.0"
+
+export spawn
+export join
+export sleep
+export current_id
+export mutex_create
+export mutex_lock
+export mutex_unlock
+export mutex_destroy

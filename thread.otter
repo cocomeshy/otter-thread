@@ -1,0 +1,268 @@
+use memory;
+
+link "kernel32.dll" ~> CreateThread(
+  lpThreadAttributes:rawptr,
+  dwStackSize:int,
+  lpStartAddress:rawptr,
+  lpParameter:rawptr,
+  dwCreationFlags:int,
+  lpThreadId:rawptr
+) -> rawptr;
+
+link "kernel32.dll" ~> WaitForSingleObject(
+  hHandle:rawptr,
+  dwMilliseconds:int
+) -> int;
+
+link "kernel32.dll" ~> CloseHandle(hObject:rawptr) -> bool;
+link "kernel32.dll" ~> Sleep(dwMilliseconds:int) -> void;
+link "kernel32.dll" ~> GetCurrentThreadId() -> int;
+
+link "kernel32.dll" ~> CreateMutexA(
+  lpMutexAttributes:rawptr,
+  bInitialOwner:bool,
+  lpName:rawptr
+) -> rawptr;
+
+link "kernel32.dll" ~> ReleaseMutex(hMutex:rawptr) -> bool;
+
+link 56 ~> __linux_clone(
+  flags:int,
+  child_stack:rawptr,
+  parent_tid:rawptr,
+  child_tid:rawptr,
+  tls:rawptr
+) -> int;
+
+link 35 ~> __linux_nanosleep(req:rawptr, rem:rawptr) -> int;
+link 186 ~> __linux_gettid() -> int;
+link 202 ~> __linux_futex(
+  uaddr:rawptr,
+  futex_op:int,
+  val:int,
+  timeout:rawptr,
+  uaddr2:rawptr,
+  val3:int
+) -> int;
+
+link 33554489 ~> __macos_bsdthread_create(
+  func:rawptr,
+  func_arg:rawptr,
+  stack:rawptr,
+  pthread:rawptr,
+  flags:int,
+  unused:int
+) -> int;
+
+link 33554467 ~> __macos_nanosleep(req:rawptr, rem:rawptr) -> int;
+
+/**
+ * Creates a new OS thread that begins executing at the given function pointer.
+ * On Windows, uses CreateThread. On Linux, uses the clone syscall with
+ * CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD flags.
+ * On macOS, uses bsdthread_create.
+ * @param func  Function pointer to the thread entry point
+ * @param arg   Argument passed to the thread function as rawptr
+ * @returns     Platform-specific thread handle
+ */
+~> spawn(func:rawptr, arg:rawptr) -> rawptr {
+  flow handle:rawptr = null;
+  match (PLATFORM) {
+    1 -> {
+      handle = CreateThread(null, 0, func, arg, 0, null);
+    };
+    0 -> {
+      rock stack_mem:rawptr = alloc(65536);
+      rock stack_top:rawptr = stack_mem @ 65536;
+      rock tid:int = __linux_clone(69376, stack_top, null, null, null);
+      handle = tid;
+    };
+    2 -> {
+      rock tid:int = __macos_bsdthread_create(func, arg, null, null, 0, 0);
+      handle = tid;
+    };
+    _ -> {};
+  }
+  return handle;
+}
+
+/**
+ * Blocks until the specified thread completes execution.
+ * On Windows, calls WaitForSingleObject with INFINITE timeout then closes
+ * the handle. On Linux, uses futex wait on the thread ID.
+ * @param handle  Thread handle obtained from spawn()
+ */
+~> join(handle:rawptr) -> void {
+  match (PLATFORM) {
+    1 -> {
+      WaitForSingleObject(handle, -1);
+      CloseHandle(handle);
+    };
+    0 -> {
+      rock tid_ptr:rawptr = handle;
+      __linux_futex(tid_ptr, 0, 0, null, null, 0);
+    };
+    2 -> {};
+    _ -> {};
+  }
+}
+
+/**
+ * Suspends the current thread for the specified duration.
+ * On Windows, uses kernel32 Sleep. On Linux/macOS, constructs a timespec
+ * struct and calls the nanosleep syscall.
+ * @param ms  Duration in milliseconds
+ */
+~> sleep(ms:int) -> void {
+  match (PLATFORM) {
+    1 -> {
+      Sleep(ms);
+    };
+    0 -> {
+      rock timespec:rawptr = alloc(16);
+      rock seconds:int = ms / 1000;
+      rock nanos:int = (ms % 1000) * 1000000;
+      *timespec = seconds;
+      rock nanos_ptr:rawptr = timespec @ 8;
+      *nanos_ptr = nanos;
+      __linux_nanosleep(timespec, null);
+      free(timespec);
+    };
+    2 -> {
+      rock timespec:rawptr = alloc(16);
+      rock seconds:int = ms / 1000;
+      rock nanos:int = (ms % 1000) * 1000000;
+      *timespec = seconds;
+      rock nanos_ptr:rawptr = timespec @ 8;
+      *nanos_ptr = nanos;
+      __macos_nanosleep(timespec, null);
+      free(timespec);
+    };
+    _ -> {};
+  }
+}
+
+/**
+ * Returns the OS thread ID of the calling thread.
+ * On Windows, calls GetCurrentThreadId. On Linux, uses the gettid syscall.
+ * @returns  The current thread's integer ID
+ */
+~> current_id() -> int {
+  match (PLATFORM) {
+    1 -> { return GetCurrentThreadId(); };
+    0 -> { return __linux_gettid(); };
+    _ -> { return 0; };
+  }
+}
+
+/**
+ * Allocates a new mutual exclusion lock.
+ * On Windows, creates a kernel mutex via CreateMutexA.
+ * On Linux/macOS, allocates an 8-byte futex word initialized to 0 (unlocked).
+ * @returns  Opaque mutex handle
+ */
+~> mutex_create() -> rawptr {
+  match (PLATFORM) {
+    1 -> {
+      return CreateMutexA(null, false, null);
+    };
+    0 -> {
+      rock mtx:rawptr = alloc(8);
+      *mtx = 0;
+      return mtx;
+    };
+    2 -> {
+      rock mtx:rawptr = alloc(8);
+      *mtx = 0;
+      return mtx;
+    };
+    _ -> { return null; };
+  }
+}
+
+/**
+ * Acquires a mutex lock, blocking until it becomes available.
+ * On Windows, uses WaitForSingleObject with INFINITE timeout.
+ * On Linux, spins on the futex word and falls back to futex wait.
+ * On macOS, uses a spin loop.
+ * @param mtx  Mutex handle from mutex_create()
+ */
+~> mutex_lock(mtx:rawptr) -> void {
+  match (PLATFORM) {
+    1 -> {
+      WaitForSingleObject(mtx, -1);
+    };
+    0 -> {
+      flow locked:bool = false;
+      loop (!locked) {
+        rock val:int = *mtx;
+        match (val == 0) {
+          true -> {
+            *mtx = 1;
+            locked = true;
+          };
+          _ -> {
+            __linux_futex(mtx, 0, 1, null, null, 0);
+          };
+        }
+      }
+    };
+    2 -> {
+      flow locked:bool = false;
+      loop (!locked) {
+        rock val:int = *mtx;
+        match (val == 0) {
+          true -> {
+            *mtx = 1;
+            locked = true;
+          };
+          _ -> {};
+        }
+      }
+    };
+    _ -> {};
+  }
+}
+
+/**
+ * Releases a previously acquired mutex lock.
+ * On Windows, calls ReleaseMutex. On Linux, zeroes the futex word
+ * and wakes one waiting thread via futex wake. On macOS, zeroes the word.
+ * @param mtx  Mutex handle from mutex_create()
+ */
+~> mutex_unlock(mtx:rawptr) -> void {
+  match (PLATFORM) {
+    1 -> {
+      ReleaseMutex(mtx);
+    };
+    0 -> {
+      *mtx = 0;
+      __linux_futex(mtx, 1, 1, null, null, 0);
+    };
+    2 -> {
+      *mtx = 0;
+    };
+    _ -> {};
+  }
+}
+
+/**
+ * Destroys a mutex and frees its backing memory.
+ * On Windows, closes the kernel handle. On Linux/macOS, frees the
+ * allocated futex word.
+ * @param mtx  Mutex handle from mutex_create()
+ */
+~> mutex_destroy(mtx:rawptr) -> void {
+  match (PLATFORM) {
+    1 -> {
+      CloseHandle(mtx);
+    };
+    0 -> {
+      free(mtx);
+    };
+    2 -> {
+      free(mtx);
+    };
+    _ -> {};
+  }
+}
